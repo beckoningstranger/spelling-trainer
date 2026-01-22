@@ -298,7 +298,7 @@ def get_review_queue(entries: dict[str, WordEntry], today: str) -> list[WordEntr
 # ----------------------------
 # App modes
 # ----------------------------
-def add_loop(entries: dict[str, WordEntry], i18n: I18N) -> None:
+def add_loop(entries: dict[str, WordEntry], i18n: I18N, save_now) -> None:
     print(i18n.t("ADD_MODE_TITLE") + "\n")
 
     while True:
@@ -312,6 +312,7 @@ def add_loop(entries: dict[str, WordEntry], i18n: I18N) -> None:
         phrase = input(i18n.t("PHRASE_PROMPT") + " ").strip()
         # (we only treat exitnow in the word prompt; phrases may contain that string)
         add_word(entries, word, phrase)
+        save_now()
         print(f"{i18n.t('SAVED')} {word}\n")
 
 
@@ -342,7 +343,7 @@ def list_words(entries: dict[str, WordEntry], today: str, i18n: I18N) -> None:
             print(f"  {e.word:20}  {i18n.t('STREAK', s=e.streak, m=MASTERY_STREAK)}  {i18n.t('LAST', last=last)}")
 
 
-def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I18N, limit: int | None = None) -> None:
+def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I18N, save_now, username: str | None, limit: int | None = None) -> None:
     queue = get_review_queue(entries, today)
     already_today = len([e for e in entries.values() if (not e.mastered) and e.reviewed_today(today)])
 
@@ -357,12 +358,12 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
     if limit is not None:
         queue = queue[:limit]
 
-    # Only print session header if not speaking (prevents “peeking”)
-    if not speaker.enabled:
-        print(i18n.t("TODAY", today=today))
-        if already_today:
-            print(i18n.t("ALREADY_REVIEWED_TODAY", n=already_today))
-        print(i18n.t("REVIEW_START", n=len(queue), m=MASTERY_STREAK) + "\n")
+    print(i18n.t("TODAY", today=today))
+    if already_today:
+        print(i18n.t("ALREADY_REVIEWED_TODAY", n=already_today))
+    print(i18n.t("REVIEW_START", n=len(queue), m=MASTERY_STREAK) + "\n")
+    if speaker.enabled and username:
+        speaker.speak_many_and_wait([f"{i18n.t('WELCOME')} {username}", i18n.t('LETSGO')])
 
     for idx, e in enumerate(queue, start=1):
         if speaker.enabled:
@@ -372,11 +373,24 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             else:
                 speaker.speak_async(i18n.t("SAY_NEXT_WORD"))
 
-            # Use a neutral prompt so the kid doesn't get hints from screen text
-            typed = input("> ").strip()
+            while True:
+                typed = input(i18n.t("TYPE_HINT") + " ").strip()
+                speaker.stop()
 
-            # Stop prompt as soon as they finish typing (optional, but nicer)
-            speaker.stop()
+                if typed.lower() == "a":
+                    # Play the prompt again
+                    if e.phrase:
+                        speaker.speak_many_async([e.phrase, f"{i18n.t("SAY_SPELL_NOW")} {e.word}"])
+                    else:
+                        speaker.speak_async(i18n.t("SAY_NEXT_WORD"))
+                    continue
+                elif typed.lower() == "q":
+                    # Quit session
+                    if speaker.enabled:
+                        speaker.speak_async(i18n.t("QUIT"))  # or QUIT message if you add one
+                    return
+
+                break
         else:
             # Text mode: show the phrase with the word highlighted (your earlier request)
             print("=" * 50)
@@ -390,8 +404,13 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             input(i18n.t("PRESS_ENTER") + " ")
             typed = input(i18n.t("TYPE_WORD") + " ").strip()
 
+        if typed.lower() == "q":
+            print(i18n.t("QUIT"))
+            return
+
         if typed.lower() == e.word.lower():
             record_success_once_per_day(e, today)
+            save_now()
             if speaker.enabled:
                 speaker.speak(i18n.t("CORRECT"))
             else:
@@ -401,6 +420,7 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
                     print(success(i18n.t("CORRECT_STREAK", s=e.streak, m=MASTERY_STREAK)))
         else:
             reset_streak(e)
+            save_now()
             if speaker.enabled:
                 speaker.speak(i18n.t("WRONG"))
             else:
@@ -460,9 +480,6 @@ def main() -> None:
     i18n = I18N(language=args.language, translations=translations)
 
     speaker = Speaker(enabled=args.speak, language=args.language)
-    if speaker.enabled and args.user:
-        speaker.speak_many_and_wait([f"{i18n.t('WELCOME')} {args.user}", i18n.t('LETSGO')])
-
 
     data_dir = Path(args.data_dir)
     path = resolve_data_file(args.user, args.file, data_dir)
@@ -470,19 +487,20 @@ def main() -> None:
     entries = load_words(path)
     today = date.today().isoformat()
 
+    def save_now() -> None:
+        save_words(path, entries)
+
     try:
 
         if args.cmd == "add":
-            add_loop(entries, i18n)
-            save_words(path, entries)
+            add_loop(entries, i18n, save_now)
             print(i18n.t("DATA_FILE", path=path))
 
         elif args.cmd == "review":
             if not speaker.enabled:
                 print(i18n.t("USER", user=args.user or "(file override)"))
                 print(i18n.t("DATA_FILE", path=path) + "\n")
-            review(entries, today=today, speaker=speaker, i18n=i18n, limit=args.limit)
-            save_words(path, entries)
+            review(entries, today=today, speaker=speaker, i18n=i18n, username=args.user, save_now=save_now, limit=args.limit)
 
         elif args.cmd == "list":
             print(i18n.t("USER", user=args.user or "(file override)"))
