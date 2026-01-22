@@ -7,6 +7,7 @@ import random
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -89,34 +90,63 @@ def load_translations_csv(path: Path) -> dict[str, dict[str, str]]:
 # ----------------------------
 # TTS Speaker (Windows + Linux)
 # ----------------------------
+import subprocess
+import platform
+import shutil
+
 class Speaker:
     def __init__(self, enabled: bool, language: str):
         self.enabled = enabled
         self.language = language  # "en" or "de"
         self._warned = False
         self._is_windows = platform.system().lower().startswith("win")
+        self._proc: subprocess.Popen | None = None
 
-    def speak(self, text: str) -> None:
+    def stop(self) -> None:
+        """Stop any current speech."""
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+        self._proc = None
+
+    def speak_async(self, text: str) -> None:
+        """Start speaking and return immediately."""
         if not self.enabled:
             return
         text = (text or "").strip()
         if not text:
             return
 
+        # Stop any previous prompt so prompts don't overlap
+        self.stop()
+
         if self._is_windows:
-            self._speak_windows(text)
+            self._proc = self._spawn_windows(text)
         else:
-            self._speak_linux(text)
+            self._proc = self._spawn_linux(text)
 
-    def speak_many(self, parts: list[str], pause: str = ". ") -> None:
-        # Reliable way to avoid "second speak gets dropped"
+        if self._proc is None:
+            self._warn_once("[TTS] Could not start speech (no engine found).")
+
+    def speak_and_wait(self, text: str) -> None:
+        self.speak_async(text)
+        if self._proc:
+            self._proc.wait()
+
+    def speak_many_and_wait(self, parts: list[str], pause: str = ". ") -> None:
         merged = pause.join(p.strip() for p in parts if p and p.strip())
-        self.speak(merged)
+        self.speak_and_wait(merged)
 
-    def _speak_windows(self, text: str) -> None:
+    def speak_many_async(self, parts: list[str], pause: str = ". ") -> None:
+        merged = pause.join(p.strip() for p in parts if p and p.strip())
+        self.speak_async(merged)
+
+    # ---------- platform spawners ----------
+
+    def _spawn_windows(self, text: str) -> subprocess.Popen | None:
         safe = text.replace('"', '`"')
-
-        # Select voice based on culture prefix (de-* / en-*)
         culture_prefix = "de-*" if self.language == "de" else "en-*"
 
         ps = (
@@ -130,32 +160,30 @@ class Speaker:
         )
 
         try:
-            subprocess.run(
+            return subprocess.Popen(
                 ["powershell", "-NoProfile", "-Command", ps],
-                check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             self._warn_once("[TTS] PowerShell not found; cannot speak on this Windows setup.")
+            return None
 
-    def _speak_linux(self, text: str) -> None:
+    def _spawn_linux(self, text: str) -> subprocess.Popen | None:
         lang = "de" if self.language == "de" else "en"
 
-        # Prefer speech-dispatcher
+        # IMPORTANT: no --wait here (we WANT it async)
         if shutil.which("spd-say"):
-            # --wait makes back-to-back calls behave nicely (but we also have speak_many)
-            subprocess.run(["spd-say", "--wait", "-l", lang, text], check=False)
-            return
+            return subprocess.Popen(["spd-say", "-l", lang, text],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # espeak-ng / espeak
         if shutil.which("espeak-ng"):
-            subprocess.run(["espeak-ng", "-v", lang, text], check=False)
-            return
+            return subprocess.Popen(["espeak-ng", "-v", lang, text],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if shutil.which("espeak"):
-            subprocess.run(["espeak", "-v", lang, text], check=False)
-            return
+            return subprocess.Popen(["espeak", "-v", lang, text],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         self._warn_once(
             "[TTS] No TTS engine found. On Ubuntu/Debian install:\n"
@@ -163,12 +191,14 @@ class Speaker:
             "or\n"
             "  sudo apt-get update && sudo apt-get install -y speech-dispatcher\n"
         )
+        return None
 
     def _warn_once(self, msg: str) -> None:
         if self._warned:
             return
         self._warned = True
         print(msg)
+
 
 
 def setup_tts_ubuntu(run_install: bool, i18n: I18N) -> None:
@@ -336,12 +366,17 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
 
     for idx, e in enumerate(queue, start=1):
         if speaker.enabled:
-            # Audio-only mode: don't print the phrase/word.
-            # Speak the phrase, then prompt to type.
             if e.phrase:
-                speaker.speak_many([e.phrase, i18n.t("SAY_SPELL_NOW"), e.word])
+                # Speak prompt while allowing typing immediately
+                speaker.speak_many_async([e.phrase, f"{i18n.t('SAY_SPELL_NOW')} {e.word}"])
             else:
-                speaker.speak(i18n.t("SAY_NEXT_WORD"))
+                speaker.speak_async(i18n.t("SAY_NEXT_WORD"))
+
+            # Use a neutral prompt so the kid doesn't get hints from screen text
+            typed = input("> ").strip()
+
+            # Stop prompt as soon as they finish typing (optional, but nicer)
+            speaker.stop()
         else:
             # Text mode: show the phrase with the word highlighted (your earlier request)
             print("=" * 50)
@@ -352,10 +387,8 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             else:
                 print(i18n.t("NO_PHRASE"))
 
-        if not speaker.enabled:
             input(i18n.t("PRESS_ENTER") + " ")
-
-        typed = input(i18n.t("TYPE_WORD") + " ").strip()
+            typed = input(i18n.t("TYPE_WORD") + " ").strip()
 
         if typed.lower() == e.word.lower():
             record_success_once_per_day(e, today)
@@ -427,7 +460,9 @@ def main() -> None:
     i18n = I18N(language=args.language, translations=translations)
 
     speaker = Speaker(enabled=args.speak, language=args.language)
-    speaker.speak_many([f"{i18n.t("WELCOME")} {args.user}", i18n.t("LETSGO")])
+    if speaker.enabled and args.user:
+        speaker.speak_many_and_wait([f"{i18n.t('WELCOME')} {args.user}", i18n.t('LETSGO')])
+
 
     data_dir = Path(args.data_dir)
     path = resolve_data_file(args.user, args.file, data_dir)

@@ -28,7 +28,7 @@ TYPE_WORD,"Type the word:","Gib das Wort ein:"
 
 WELCOME,"Welcome","Hallo"
 LETSGO,"Here's your first word.","Hier kommt dein erstes Wort."
-SAY_SPELL_NOW,"Now type","Buchstabiere"
+SAY_SPELL_NOW,"Now type","Jetzt tippe"
 SAY_NEXT_WORD,"Spell the next word.","Buchstabiere das nächste Wort."
 
 CORRECT,"Correct!","Richtig!"
