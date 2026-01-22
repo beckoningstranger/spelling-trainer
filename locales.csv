@@ -1,0 +1,44 @@
+Key,English,German
+ADD_MODE_TITLE,"Add mode. Type 'exitnow' to finish.","Hinzufügen-Modus. Tippe 'exitnow', um zu beenden."
+WORD_PROMPT,"Word:","Wort:"
+PHRASE_PROMPT,"Phrase:","Satz:"
+SAVED,"Saved:","Gespeichert:"
+LEAVING_ADD,"Leaving add mode.","Hinzufügen-Modus beendet."
+
+USER,"User: {user}","Benutzer: {user}"
+DATA_FILE,"Data file: {path}","Datendatei: {path}"
+
+TODAY,"Today: {today}","Heute: {today}"
+DUE_TITLE,"DUE (not mastered yet):","FÄLLIG (noch nicht geschafft):"
+MASTERED_TITLE,"MASTERED:","GESCHAFFT:"
+NONE,"(none)","(keine)"
+TODAY_FLAG,"✓ today","✓ heute"
+STREAK,"streak {s}/{m}","Serie {s}/{m}"
+LAST,"last {last}","zuletzt {last}"
+
+NO_WORDS_DUE,"No words due. Everything is mastered 🎉","Keine Wörter fällig. Alles geschafft 🎉"
+ALL_DONE_TODAY,"All due words have already been reviewed today ✅","Alle fälligen Wörter wurden heute bereits geübt ✅"
+ALREADY_REVIEWED_TODAY,"Already reviewed today (and therefore skipped): {n}","Heute bereits geübt (und daher übersprungen): {n}"
+
+REVIEW_START,"Reviewing now: {n} word(s). (Mastery = {m} in a row)","Jetzt werden {n} Wörter geübt. (Meisterschaft = {m} in Folge)"
+PROGRESS,"{i}/{n} (current streak: {s}/{m})","{i}/{n} (aktuelle Serie: {s}/{m})"
+NO_PHRASE,"No context sentence saved for this word.","Kein Beispielsatz gespeichert."
+PRESS_ENTER,"Press Enter when ready...","Drücke Enter, wenn du bereit bist..."
+TYPE_WORD,"Type the word:","Gib das Wort ein:"
+
+WELCOME,"Welcome","Hallo"
+LETSGO,"Here's your first word.","Hier kommt dein erstes Wort."
+SAY_SPELL_NOW,"Now type","Buchstabiere"
+SAY_NEXT_WORD,"Spell the next word.","Buchstabiere das nächste Wort."
+
+CORRECT,"Correct!","Richtig!"
+WRONG,"Not quite.","Leider falsch."
+EXPECTED,"Expected: {word}","Richtig wäre: {word}"
+RESET_STREAK,"Streak reset to 0/{m}.","Serie zurückgesetzt auf 0/{m}."
+CORRECT_STREAK,"✅ Correct! Streak: {s}/{m}","✅ Richtig! Serie: {s}/{m}"
+MASTERED_NOW,"✅ Correct! Streak: {s}/{m} — MASTERED 🎉","✅ Richtig! Serie: {s}/{m} — GESCHAFFT 🎉"
+DONE,"Done.","Fertig."
+
+TTS_SETUP_INSTRUCTIONS,"To enable TTS on Ubuntu/Debian, run:","Um TTS auf Ubuntu/Debian zu aktivieren, ausführen:"
+TTS_SETUP_INSTALLING,"Installing espeak-ng (Ubuntu/Debian)...","Installiere espeak-ng (Ubuntu/Debian)..."
+CANCELLED,"You aborted the program.","Du hast das Programm abgebrochen."

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import re
 import csv
-import random
 import platform
+import random
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
 from colorama import Fore, Style, init
 
 init(autoreset=True)
@@ -19,6 +20,9 @@ MASTERY_STREAK = 5
 DEFAULT_DATA_DIR = Path("data")
 
 
+# ----------------------------
+# Data model
+# ----------------------------
 @dataclass
 class WordEntry:
     word: str
@@ -39,9 +43,56 @@ class WordEntry:
     def last_review(self) -> str | None:
         return self.history[-1] if self.history else None
 
+
+# ----------------------------
+# i18n (Key,English,German)
+# ----------------------------
+class I18N:
+    def __init__(self, language: str, translations: dict[str, dict[str, str]]):
+        self.language = language
+        self.translations = translations
+
+    def t(self, key: str, **kwargs) -> str:
+        entry = self.translations.get(key)
+        if not entry:
+            # Make missing keys obvious during development
+            text = key
+        else:
+            text = entry.get(self.language) or entry.get("en") or key
+        try:
+            return text.format(**kwargs)
+        except KeyError:
+            # If formatting vars are missing, still show something useful
+            return text
+
+
+def load_translations_csv(path: Path) -> dict[str, dict[str, str]]:
+    """
+    CSV columns: Key,English,German
+    Returns: { key: { "en": English, "de": German } }
+    """
+    if not path.exists():
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (row.get("Key") or "").strip()
+            en = (row.get("English") or "").strip()
+            de = (row.get("German") or "").strip()
+            if key:
+                out[key] = {"en": en, "de": de}
+    return out
+
+
+# ----------------------------
+# TTS Speaker (Windows + Linux)
+# ----------------------------
 class Speaker:
-    def __init__(self, enabled: bool):
+    def __init__(self, enabled: bool, language: str):
         self.enabled = enabled
+        self.language = language  # "en" or "de"
         self._warned = False
         self._is_windows = platform.system().lower().startswith("win")
 
@@ -57,18 +108,27 @@ class Speaker:
         else:
             self._speak_linux(text)
 
+    def speak_many(self, parts: list[str], pause: str = ". ") -> None:
+        # Reliable way to avoid "second speak gets dropped"
+        merged = pause.join(p.strip() for p in parts if p and p.strip())
+        self.speak(merged)
+
     def _speak_windows(self, text: str) -> None:
-        # Built-in .NET speech synthesizer (no installs needed)
         safe = text.replace('"', '`"')
+
+        # Select voice based on culture prefix (de-* / en-*)
+        culture_prefix = "de-*" if self.language == "de" else "en-*"
+
         ps = (
-        "Add-Type -AssemblyName System.Speech; "
-        "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        "$voice = $synth.GetInstalledVoices() | "
-        "Where-Object { $_.VoiceInfo.Culture.Name -like 'de-*' } | "
-        "Select-Object -First 1; "
-        "if ($voice) { $synth.SelectVoice($voice.VoiceInfo.Name) }; "
-        f"$synth.Speak(\"{safe}\");"
+            "Add-Type -AssemblyName System.Speech; "
+            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$voice = $synth.GetInstalledVoices() | "
+            f"Where-Object {{ $_.VoiceInfo.Culture.Name -like '{culture_prefix}' }} | "
+            "Select-Object -First 1; "
+            "if ($voice) { $synth.SelectVoice($voice.VoiceInfo.Name) }; "
+            f"$synth.Speak(\"{safe}\");"
         )
+
         try:
             subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps],
@@ -80,30 +140,28 @@ class Speaker:
             self._warn_once("[TTS] PowerShell not found; cannot speak on this Windows setup.")
 
     def _speak_linux(self, text: str) -> None:
-        # Prefer spd-say if present, else espeak-ng/espeak
+        lang = "de" if self.language == "de" else "en"
+
+        # Prefer speech-dispatcher
         if shutil.which("spd-say"):
-            subprocess.run(["spd-say", "-l", "de", text], check=False)
+            # --wait makes back-to-back calls behave nicely (but we also have speak_many)
+            subprocess.run(["spd-say", "--wait", "-l", lang, text], check=False)
             return
-        
+
+        # espeak-ng / espeak
         if shutil.which("espeak-ng"):
-            subprocess.run(["espeak-ng", "-v", "de", text], check=False)
+            subprocess.run(["espeak-ng", "-v", lang, text], check=False)
             return
 
         if shutil.which("espeak"):
-            subprocess.run(["espeak", "-v", "de", text], check=False)
+            subprocess.run(["espeak", "-v", lang, text], check=False)
             return
 
-        for cmd in ("espeak-ng", "espeak"):
-            if shutil.which(cmd):
-                subprocess.run([cmd, text], check=False)
-                return
-
         self._warn_once(
-            "[TTS] No TTS engine found. On Ubuntu/Debian install one of:\n"
+            "[TTS] No TTS engine found. On Ubuntu/Debian install:\n"
             "  sudo apt-get update && sudo apt-get install -y espeak-ng\n"
             "or\n"
             "  sudo apt-get update && sudo apt-get install -y speech-dispatcher\n"
-            "Then rerun with --speak."
         )
 
     def _warn_once(self, msg: str) -> None:
@@ -112,37 +170,35 @@ class Speaker:
         self._warned = True
         print(msg)
 
-def setup_tts_ubuntu(run_install: bool) -> None:
-    """
-    For Ubuntu/Debian-like systems, try to install espeak-ng via apt.
-    If run_install=False, only print the command.
-    """
-    cmd = ["sudo", "apt-get", "update", "&&", "sudo", "apt-get", "install", "-y", "espeak-ng"]
+
+def setup_tts_ubuntu(run_install: bool, i18n: I18N) -> None:
     printable = "sudo apt-get update && sudo apt-get install -y espeak-ng"
 
     if not run_install:
-        print("To enable TTS on Ubuntu/Debian, run:")
+        print(i18n.t("TTS_SETUP_INSTRUCTIONS"))
         print(f"  {printable}")
         return
 
-    # Run via shell so the && works (simple, and this is a user-invoked command)
-    print("Installing espeak-ng (Ubuntu/Debian)...")
+    print(i18n.t("TTS_SETUP_INSTALLING"))
     subprocess.run(printable, shell=True, check=False)
 
 
+# ----------------------------
+# Terminal helpers
+# ----------------------------
 def success(text: str) -> str:
     return Fore.GREEN + text
+
 
 def error(text: str) -> str:
     return Fore.RED + Style.BRIGHT + text
 
+
 def highlight(text: str) -> str:
     return Fore.YELLOW + Style.BRIGHT + text
 
-def highlight_word_in_phrase(phrase: str, word:str) -> str:
-    """
-    Highlight all occurrences of 'word' inside 'phrase', case-insensitive
-    """
+
+def highlight_word_in_phrase(phrase: str, word: str) -> str:
     if not phrase or not word:
         return phrase
 
@@ -152,6 +208,10 @@ def highlight_word_in_phrase(phrase: str, word:str) -> str:
     pattern = re.compile(re.escape(word), re.IGNORECASE)
     return pattern.sub(repl, phrase)
 
+
+# ----------------------------
+# CSV persistence (words)
+# ----------------------------
 def load_words(path: Path) -> dict[str, WordEntry]:
     if not path.exists():
         return {}
@@ -177,9 +237,7 @@ def save_words(path: Path, entries: dict[str, WordEntry]) -> None:
         writer.writeheader()
         for key in sorted(entries.keys(), key=str.lower):
             e = entries[key]
-            writer.writerow(
-                {"word": e.word, "phrase": e.phrase, "history": DATE_SEP.join(e.history)}
-            )
+            writer.writerow({"word": e.word, "phrase": e.phrase, "history": DATE_SEP.join(e.history)})
 
 
 def add_word(entries: dict[str, WordEntry], word: str, phrase: str) -> None:
@@ -188,7 +246,7 @@ def add_word(entries: dict[str, WordEntry], word: str, phrase: str) -> None:
     if not word:
         raise ValueError("Word must not be empty.")
     if word in entries:
-        entries[word].phrase = phrase  # update phrase, keep history
+        entries[word].phrase = phrase
     else:
         entries[word] = WordEntry(word=word, phrase=phrase, history=[])
 
@@ -204,91 +262,126 @@ def reset_streak(entry: WordEntry) -> None:
 
 
 def get_review_queue(entries: dict[str, WordEntry], today: str) -> list[WordEntry]:
-    """
-    Review queue = not mastered AND not already reviewed today.
-    """
-    return [
-        e for e in entries.values()
-        if (not e.mastered) and (not e.reviewed_today(today))
-    ]
+    return [e for e in entries.values() if (not e.mastered) and (not e.reviewed_today(today))]
 
 
-def list_words(entries: dict[str, WordEntry], today: str) -> None:
+# ----------------------------
+# App modes
+# ----------------------------
+def add_loop(entries: dict[str, WordEntry], i18n: I18N) -> None:
+    print(i18n.t("ADD_MODE_TITLE") + "\n")
+
+    while True:
+        word = input(i18n.t("WORD_PROMPT") + " ").strip()
+        if not word:
+            continue
+        if word.lower() == "exitnow":
+            print(i18n.t("LEAVING_ADD"))
+            return
+
+        phrase = input(i18n.t("PHRASE_PROMPT") + " ").strip()
+        # (we only treat exitnow in the word prompt; phrases may contain that string)
+        add_word(entries, word, phrase)
+        print(f"{i18n.t('SAVED')} {word}\n")
+
+
+def list_words(entries: dict[str, WordEntry], today: str, i18n: I18N) -> None:
     due = sorted(
         [e for e in entries.values() if not e.mastered],
         key=lambda x: (x.reviewed_today(today), x.word.lower()),
     )
     mastered = sorted([e for e in entries.values() if e.mastered], key=lambda x: x.word.lower())
 
-    print(f"Today: {today}\n")
+    print(i18n.t("TODAY", today=today) + "\n")
 
-    print("DUE (not mastered yet):")
+    print(i18n.t("DUE_TITLE"))
     if not due:
-        print("  (none)")
+        print("  " + i18n.t("NONE"))
     else:
         for e in due:
-            flag = "✓ today" if e.reviewed_today(today) else " "
+            flag = i18n.t("TODAY_FLAG") if e.reviewed_today(today) else " "
             last = e.last_review() or "-"
-            print(f"  [{flag:6}] {e.word:20}  streak {e.streak}/{MASTERY_STREAK}  last {last}")
+            print(f"  [{flag:6}] {e.word:20}  {i18n.t('STREAK', s=e.streak, m=MASTERY_STREAK)}  {i18n.t('LAST', last=last)}")
 
-    print("\nMASTERED:")
+    print("\n" + i18n.t("MASTERED_TITLE"))
     if not mastered:
-        print("  (none)")
+        print("  " + i18n.t("NONE"))
     else:
         for e in mastered:
             last = e.last_review() or "-"
-            print(f"  {e.word:20}  streak {e.streak}/{MASTERY_STREAK}  last {last}")
+            print(f"  {e.word:20}  {i18n.t('STREAK', s=e.streak, m=MASTERY_STREAK)}  {i18n.t('LAST', last=last)}")
 
 
-def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, limit: int | None = None) -> None:
+def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I18N, limit: int | None = None) -> None:
     queue = get_review_queue(entries, today)
     already_today = len([e for e in entries.values() if (not e.mastered) and e.reviewed_today(today)])
 
     if not queue:
         if already_today > 0:
-            print("All due words have already been reviewed today ✅")
+            print(i18n.t("ALL_DONE_TODAY"))
         else:
-            print("No words due. Everything is mastered 🎉")
+            print(i18n.t("NO_WORDS_DUE"))
         return
 
     random.shuffle(queue)
     if limit is not None:
         queue = queue[:limit]
 
-    print(f"Today: {today}")
-    if already_today:
-        print(f"Already reviewed today (and therefore skipped): {already_today}")
-    print(f"Reviewing now: {len(queue)} word(s). (Mastery = {MASTERY_STREAK} in a row)\n")
+    # Only print session header if not speaking (prevents “peeking”)
+    if not speaker.enabled:
+        print(i18n.t("TODAY", today=today))
+        if already_today:
+            print(i18n.t("ALREADY_REVIEWED_TODAY", n=already_today))
+        print(i18n.t("REVIEW_START", n=len(queue), m=MASTERY_STREAK) + "\n")
 
-    for i, e in enumerate(queue, start=1):
-        print("=" * 50)
-        print(Style.BRIGHT + f"{i}/{len(queue)}   (current streak: {e.streak}/{MASTERY_STREAK})")
-        if e.phrase:
-            # print("Context sentence (read this out loud):")
-            highlighted = highlight_word_in_phrase(e.phrase, e.word)
-            # print(f"  {highlighted}")
-            speaker.speak(f"{e.phrase} - Jetzt buchstabiere {e.word}.")
+    for idx, e in enumerate(queue, start=1):
+        if speaker.enabled:
+            # Audio-only mode: don't print the phrase/word.
+            # Speak the phrase, then prompt to type.
+            if e.phrase:
+                speaker.speak_many([e.phrase, i18n.t("SAY_SPELL_NOW"), e.word])
+            else:
+                speaker.speak(i18n.t("SAY_NEXT_WORD"))
         else:
-            print("No context sentence saved for this word.")
-            speaker.speak("Spell the next word.")
+            # Text mode: show the phrase with the word highlighted (your earlier request)
+            print("=" * 50)
+            print(Style.BRIGHT + i18n.t("PROGRESS", i=idx, n=len(queue), s=e.streak, m=MASTERY_STREAK))
+            if e.phrase:
+                highlighted = highlight_word_in_phrase(e.phrase, e.word)
+                print("  " + highlighted)
+            else:
+                print(i18n.t("NO_PHRASE"))
 
-        typed = input("Type the word: ").strip()
+        if not speaker.enabled:
+            input(i18n.t("PRESS_ENTER") + " ")
+
+        typed = input(i18n.t("TYPE_WORD") + " ").strip()
 
         if typed.lower() == e.word.lower():
             record_success_once_per_day(e, today)
-            if e.mastered:
-                print(f"✅ Correct! Streak: {e.streak}/{MASTERY_STREAK} — MASTERED 🎉")
+            if speaker.enabled:
+                speaker.speak(i18n.t("CORRECT"))
             else:
-                print(f"✅ Correct! Streak: {e.streak}/{MASTERY_STREAK}")
-            speaker.speak("Correct!")
+                if e.mastered:
+                    print(success(i18n.t("MASTERED_NOW", s=e.streak, m=MASTERY_STREAK)))
+                else:
+                    print(success(i18n.t("CORRECT_STREAK", s=e.streak, m=MASTERY_STREAK)))
         else:
             reset_streak(e)
-            print(f"❌ Not quite. Expected: {highlight(e.word)}. Streak reset to 0/{MASTERY_STREAK}")
-            speaker.speak("Not quite.")
+            if speaker.enabled:
+                speaker.speak(i18n.t("WRONG"))
+            else:
+                print(error(i18n.t("WRONG")))
+                print(error(i18n.t("EXPECTED", word=highlight(e.word))))
+                print(error(i18n.t("RESET_STREAK", m=MASTERY_STREAK)))
 
-        print("\nDone.")
+    if not speaker.enabled:
+        print("\n" + i18n.t("DONE"))
 
 
+# ----------------------------
+# Multi-user file selection
+# ----------------------------
 def resolve_data_file(user: str | None, file_override: str | None, data_dir: Path) -> Path:
     if file_override:
         return Path(file_override)
@@ -302,74 +395,71 @@ def resolve_data_file(user: str | None, file_override: str | None, data_dir: Pat
     return data_dir / f"{safe}.csv"
 
 
-def add_loop(entries: dict[str, WordEntry]) -> None:
-    print("Add mode. Type 'exitnow' to finish.\n")
-
-    while True:
-        word = input("Word: ").strip()
-        if not word:
-            continue
-        if word.lower() == "exitnow":
-            print("Leaving add mode.")
-            return
-
-        phrase = input("Phrase: ").strip()
-        if phrase.lower() == "exitnow":
-            print("Leaving add mode.")
-            return
-
-        add_word(entries, word, phrase)
-        print(f"Saved: {word!r}\n")
-
-
-
+# ----------------------------
+# CLI
+# ----------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description="Spelling trainer (CSV-backed, multi-user)")
     parser.add_argument("--user", help="User/profile name (e.g. daughter, son)")
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="Directory for user CSV files")
     parser.add_argument("--file", default=None, help="Override CSV file path (bypasses --user/--data-dir)")
+
     parser.add_argument("--speak", action="store_true", help="Read prompts aloud (TTS)")
+
+    parser.add_argument("--language", choices=["en", "de"], required=True, help="UI language (en or de)")
+    parser.add_argument("--i18n-file", default="locales.csv", help="Translation CSV file (Key,English,German)")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_add = sub.add_parser("add", help="Add words interactively (type exitnow to stop)")
+    sub.add_parser("add", help="Add words interactively (type exitnow to stop)")
 
     p_review = sub.add_parser("review", help="Run a review session")
     p_review.add_argument("--limit", type=int, default=None, help="Review at most N words today")
 
     sub.add_parser("list", help="Show due and mastered words")
+
     p_setup = sub.add_parser("setup-tts", help="Help install TTS (Ubuntu/Debian)")
     p_setup.add_argument("--install", action="store_true", help="Actually run apt install (uses sudo)")
 
-
     args = parser.parse_args()
 
-    speaker = Speaker(enabled=args.speak)
+    translations = load_translations_csv(Path(args.i18n_file))
+    i18n = I18N(language=args.language, translations=translations)
+
+    speaker = Speaker(enabled=args.speak, language=args.language)
+    speaker.speak_many([f"{i18n.t("WELCOME")} {args.user}", i18n.t("LETSGO")])
+
     data_dir = Path(args.data_dir)
     path = resolve_data_file(args.user, args.file, data_dir)
 
     entries = load_words(path)
     today = date.today().isoformat()
 
-    if args.cmd == "add":
-        add_loop(entries)
-        save_words(path, entries)
-        print(f"Data file: {path}")
-        
+    try:
 
-    elif args.cmd == "review":
-        print(f"User: {args.user or '(file override)'}")
-        print(f"Data file: {path}\n")
-        review(entries, today=today, speaker=speaker, limit=args.limit)
-        save_words(path, entries)
+        if args.cmd == "add":
+            add_loop(entries, i18n)
+            save_words(path, entries)
+            print(i18n.t("DATA_FILE", path=path))
 
-    elif args.cmd == "list":
-        print(f"User: {args.user or '(file override)'}")
-        print(f"Data file: {path}\n")
-        list_words(entries, today=today)
+        elif args.cmd == "review":
+            if not speaker.enabled:
+                print(i18n.t("USER", user=args.user or "(file override)"))
+                print(i18n.t("DATA_FILE", path=path) + "\n")
+            review(entries, today=today, speaker=speaker, i18n=i18n, limit=args.limit)
+            save_words(path, entries)
 
-    elif args.cmd == "setup-tts":
-        setup_tts_ubuntu(run_install=args.install)
+        elif args.cmd == "list":
+            print(i18n.t("USER", user=args.user or "(file override)"))
+            print(i18n.t("DATA_FILE", path=path) + "\n")
+            list_words(entries, today=today, i18n=i18n)
+
+        elif args.cmd == "setup-tts":
+            setup_tts_ubuntu(run_install=args.install, i18n=i18n)
+            return
+    
+    except KeyboardInterrupt:
+        print("\n" + i18n.t("CANCELLED"))
         return
 
 
