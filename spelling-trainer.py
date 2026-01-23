@@ -247,7 +247,7 @@ def load_words(path: Path) -> dict[str, WordEntry]:
         return {}
 
     entries: dict[str, WordEntry] = {}
-    with path.open("r", newline="", encoding="utf-8") as f:
+    with path.open("r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             word = (row.get("word") or "").strip()
@@ -262,7 +262,7 @@ def load_words(path: Path) -> dict[str, WordEntry]:
 
 def save_words(path: Path, entries: dict[str, WordEntry]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=["word", "phrase", "history"])
         writer.writeheader()
         for key in sorted(entries.keys(), key=str.lower):
@@ -412,7 +412,7 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             record_success_once_per_day(e, today)
             save_now()
             if speaker.enabled:
-                speaker.speak(i18n.t("CORRECT"))
+                speaker.speak_and_wait(i18n.t("CORRECT"))
             else:
                 if e.mastered:
                     print(success(i18n.t("MASTERED_NOW", s=e.streak, m=MASTERY_STREAK)))
@@ -422,14 +422,15 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             reset_streak(e)
             save_now()
             if speaker.enabled:
-                speaker.speak(i18n.t("WRONG"))
+                speaker.speak_and_wait(i18n.t("WRONG"))
+                print(error(i18n.t("EXPECTED", word=highlight(e.word))))
+                print(error(i18n.t("RESET_STREAK", m=MASTERY_STREAK)))
             else:
                 print(error(i18n.t("WRONG")))
                 print(error(i18n.t("EXPECTED", word=highlight(e.word))))
                 print(error(i18n.t("RESET_STREAK", m=MASTERY_STREAK)))
 
-    if not speaker.enabled:
-        print("\n" + i18n.t("DONE"))
+    print("\n" + i18n.t("DONE"))
 
 
 # ----------------------------
