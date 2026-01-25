@@ -408,7 +408,7 @@ def review(entries: dict[str, WordEntry], today: str, speaker: Speaker, i18n: I1
             print(i18n.t("QUIT"))
             return
 
-        if typed.casefold() == e.word.casefold():
+        if typed == e.word:
             record_success_once_per_day(e, today)
             save_now()
             if speaker.enabled:
